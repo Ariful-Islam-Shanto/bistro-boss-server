@@ -102,7 +102,7 @@ async function run() {
     app.get('/menuById/:id', async(req, res) => {
         const id = req.params.id;
         console.log(id);
-        const query = { _id : id}
+        const query = { _id : new ObjectId(id)}
         const result = await menuCollection.findOne(query);
         res.send(result);
         console.log(result);
@@ -270,7 +270,93 @@ async function run() {
       const result = await paymentsCollection.find(query).toArray();
       res.send(result);
     })
+
+    //? Stats and analytics
+    app.get('/admin-stats', async(req, res) => {
+      const users = await userCollection.estimatedDocumentCount();
+      const menus = await menuCollection.estimatedDocumentCount();
+      const orders = await paymentsCollection.estimatedDocumentCount();
+
+      //? aggregate Pipeline
+      //* TODO : group all the value with id and calculate the sum.
+      const result = await paymentsCollection.aggregate([
+        {
+          $group : {
+            _id : null,
+            totalRevenue : {
+              $sum : '$price'
+            }
+          }
+        }
+      ]).toArray();
+
+      const revenue = result.length > 0 ? result[0].totalRevenue : 0;
+
+      res.send({users, menus, orders, revenue});
+    })
     
+    //? Order stats using aggregate pipeline.
+    //* TODO : Using pipeline getting specific category information.
+
+    app.get('/order-stats', async(req, res) => {
+      const result = await paymentsCollection.aggregate([
+
+        //? Convert the menuId array values from string to Object Id.
+        {
+          $project: {
+            convertedIds: {
+              $map: {
+                input: "$menuId",
+                as: "menuId",
+                in: { $toObjectId: "$$menuId" }
+              }
+            }
+          }
+        },
+
+        //? Then separate every menuId value by _id from the menuId array.
+        {
+          $unwind: '$convertedIds'
+        },
+
+        //? Get data that matches with the menuId value in menuCollection.
+        {
+          $lookup : {
+            from : 'menu',
+            localField : 'convertedIds',
+            foreignField : '_id',
+            as : 'menuItems'
+          }
+        },
+
+        //? Again make all menuItems value separate from the array.
+        {
+          $unwind : '$menuItems'
+        },
+
+        //? Now group the menuItems value by category and 
+        //? For each category calculate the quantity,
+        //? For each category calculate the total price.
+        {
+          $group : {
+             _id : '$menuItems.category',
+             quantity : { $sum : 1 },
+             totalRevenue : { $sum : '$menuItems.price'}
+          }
+        },
+        {
+          $project :{
+            _id : 0,
+            category : '$_id',
+            quantity : '$quantity',
+            revenue : '$totalRevenue'
+          }
+        }
+
+      ]).toArray();
+      // console.log(result);
+      res.send(result);
+    })
     // Send a ping to confirm a successful connection
     // await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
